@@ -1,0 +1,8 @@
+.env
+*.session
+*.db
+__pycache__/
+*.pyc
+.DS_Store
+handlers.py
+main.py
