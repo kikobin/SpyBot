@@ -335,8 +335,10 @@ async def on_deleted_business_messages(event: BusinessMessagesDeleted, bot: Bot)
         if not cached:
             continue
 
-        # Don't notify when owner deletes their own messages
-        if cached.get("sender_id") == owner_id:
+        # Don't notify when owner deletes their own messages.
+        # sender_id == 0 means cached before fix (unknown sender) — skip to be safe.
+        s_id = cached.get("sender_id") or 0
+        if s_id == owner_id or s_id == 0:
             await delete_cached(conn_id, cached["chat_id"], msg_id)
             continue
 
