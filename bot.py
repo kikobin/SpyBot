@@ -168,24 +168,83 @@ async def on_business_connection(bc: BusinessConnection, bot: Bot):
         await bot.send_message(bc.user_chat_id, "❌ Бот отключён от вашего аккаунта.")
 
 
+_MEDIA_LABELS = {
+    "photo": "фото", "video": "видео", "video_note": "кружок",
+    "voice": "голосовое", "audio": "аудио", "document": "файл",
+}
+
+
 @router.business_message()
 async def on_business_message(message: Message, bot: Bot):
     conn_id = message.business_connection_id
     if not conn_id:
         return
 
+    conn = await get_connection(conn_id)
+    if not conn:
+        return
+
+    sender_id = message.from_user.id if message.from_user else 0
+    is_outgoing = sender_id == conn["user_id"]
+
+    # ── Owner replied to a message → try to download the replied-to media ──────
+    if is_outgoing and message.reply_to_message:
+        replied = message.reply_to_message
+        r_mtype, r_file_id = _extract_file_id(replied)
+
+        if r_file_id:
+            # Check if already cached with bytes
+            existing = await get_message(conn_id, message.chat.id, replied.message_id)
+            already_saved = existing and existing.get("media_data")
+
+            if not already_saved:
+                data = await _download_media(bot, r_file_id)
+                if data:
+                    label = _MEDIA_LABELS.get(r_mtype, r_mtype)
+                    # Update / create cache entry with real bytes
+                    r_sender_id = replied.from_user.id if replied.from_user else 0
+                    await save_message(
+                        connection_id=conn_id,
+                        chat_id=message.chat.id,
+                        message_id=replied.message_id,
+                        sender_id=r_sender_id,
+                        sender_name=_sender_name(replied),
+                        text=replied.text or replied.caption or "",
+                        date=int(replied.date.timestamp()) if replied.date else 0,
+                        media_type=r_mtype,
+                        file_id=r_file_id,
+                        media_data=data,
+                    )
+                    await bot.send_message(
+                        conn["user_chat_id"],
+                        f"✅ <b>Одноразовый {label} сохранён!</b>",
+                        parse_mode=ParseMode.HTML,
+                    )
+                    # Send the media immediately
+                    await _send_cached_media(bot, conn["user_chat_id"], {
+                        "media_type": r_mtype, "file_id": r_file_id, "media_data": data,
+                    })
+                else:
+                    await bot.send_message(
+                        conn["user_chat_id"],
+                        "❌ Не удалось скачать медиа — возможно уже открыто или удалено.",
+                        parse_mode=ParseMode.HTML,
+                    )
+        return  # Don't cache the outgoing reply itself
+
+    if is_outgoing:
+        return  # Ignore other outgoing messages
+
+    # ── Incoming message from interlocutor: cache + try download ──────────────
     mtype, file_id = _extract_file_id(message)
     text = message.text or message.caption or ""
     date = int(message.date.timestamp()) if message.date else 0
-    sender_id = message.from_user.id if message.from_user else 0
 
-    # Download media bytes immediately so we can resend even after deletion
     media_data: Optional[bytes] = None
     download_failed = False
     if file_id:
         media_data = await _download_media(bot, file_id)
-        if media_data is None:
-            download_failed = True
+        download_failed = media_data is None
 
     await save_message(
         connection_id=conn_id,
@@ -200,21 +259,17 @@ async def on_business_message(message: Message, bot: Bot):
         media_data=media_data,
     )
 
-    # Once-view media: Telegram Bot API blocks download of view-once files.
-    # Warn owner immediately — they need to open it NOW before it expires.
-    if download_failed and mtype and sender_id != 0:
-        conn = await get_connection(conn_id)
-        if conn and sender_id != conn["user_id"]:
-            sender_name = _sender_name(message)
-            label = {"photo": "фото", "video": "видео", "video_note": "кружок",
-                     "voice": "голосовое", "audio": "аудио"}.get(mtype, mtype)
-            await bot.send_message(
-                conn["user_chat_id"],
-                f"⚠️ <b>Одноразовый {label}</b> от {sender_name}\n\n"
-                f"Telegram не разрешает боту скачать это медиа.\n"
-                f"<b>Открой сейчас</b> — после просмотра оно исчезнет.",
-                parse_mode=ParseMode.HTML,
-            )
+    # Once-view: download blocked by Telegram — tell owner to reply (don't open!)
+    if download_failed and mtype:
+        label = _MEDIA_LABELS.get(mtype, mtype)
+        sender_name = _sender_name(message)
+        await bot.send_message(
+            conn["user_chat_id"],
+            f"⏳ <b>Одноразовый {label}</b> от {sender_name}\n\n"
+            f"Ответь на него <b>любым сообщением</b> (не открывая!) "
+            f"— и я скачаю его для тебя.",
+            parse_mode=ParseMode.HTML,
+        )
 
 
 @router.edited_business_message()
