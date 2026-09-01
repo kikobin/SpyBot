@@ -5,6 +5,9 @@ from typing import Optional, List, Dict, Any
 # On Railway: add a Volume mounted at /data, set DB_PATH=/data/messages.db
 DB_PATH = os.getenv("DB_PATH", "messages.db")
 
+# Max size for inline media storage (20 MB). Larger files skipped.
+MAX_MEDIA_BYTES = 20 * 1024 * 1024
+
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -19,18 +22,26 @@ async def init_db():
                 connection_id TEXT    NOT NULL,
                 chat_id       INTEGER NOT NULL,
                 message_id    INTEGER NOT NULL,
+                sender_id     INTEGER,
                 sender_name   TEXT,
                 text          TEXT,
                 date          INTEGER,
                 media_type    TEXT,
                 file_id       TEXT,
+                media_data    BLOB,
                 PRIMARY KEY (connection_id, chat_id, message_id)
             );
         """)
+        # Migrate existing table if sender_id / media_data columns missing
+        for col, typedef in [("sender_id", "INTEGER"), ("media_data", "BLOB")]:
+            try:
+                await db.execute(f"ALTER TABLE messages ADD COLUMN {col} {typedef}")
+            except Exception:
+                pass
         await db.commit()
 
 
-# ── Connections ──────────────────────────────────────────────────────────────
+# ── Connections ───────────────────────────────────────────────────────────────
 
 async def save_connection(connection_id: str, user_chat_id: int, user_id: int, is_enabled: bool):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -42,27 +53,31 @@ async def save_connection(connection_id: str, user_chat_id: int, user_id: int, i
         await db.commit()
 
 
-async def get_user_chat_id(connection_id: str) -> Optional[int]:
+async def get_connection(connection_id: str) -> Optional[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT user_chat_id FROM connections WHERE connection_id=? AND is_enabled=1",
+            "SELECT user_chat_id, user_id FROM connections WHERE connection_id=? AND is_enabled=1",
             (connection_id,),
         ) as cur:
             row = await cur.fetchone()
-    return row[0] if row else None
+    return {"user_chat_id": row[0], "user_id": row[1]} if row else None
 
 
-# ── Messages ─────────────────────────────────────────────────────────────────
+# ── Messages ──────────────────────────────────────────────────────────────────
 
 async def save_message(connection_id: str, chat_id: int, message_id: int,
-                       sender_name: str, text: str, date: int,
-                       media_type: Optional[str] = None, file_id: Optional[str] = None):
+                       sender_id: int, sender_name: str, text: str, date: int,
+                       media_type: Optional[str] = None,
+                       file_id: Optional[str] = None,
+                       media_data: Optional[bytes] = None):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """INSERT OR REPLACE INTO messages
-               (connection_id, chat_id, message_id, sender_name, text, date, media_type, file_id)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (connection_id, chat_id, message_id, sender_name, text, date, media_type, file_id),
+               (connection_id, chat_id, message_id, sender_id, sender_name,
+                text, date, media_type, file_id, media_data)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (connection_id, chat_id, message_id, sender_id, sender_name,
+             text, date, media_type, file_id, media_data),
         )
         await db.commit()
 
@@ -70,12 +85,15 @@ async def save_message(connection_id: str, chat_id: int, message_id: int,
 def _row(row) -> Dict[str, Any]:
     return {
         "connection_id": row[0], "chat_id": row[1], "message_id": row[2],
-        "sender_name": row[3], "text": row[4], "date": row[5],
-        "media_type": row[6], "file_id": row[7],
+        "sender_id": row[3], "sender_name": row[4],
+        "text": row[5], "date": row[6],
+        "media_type": row[7], "file_id": row[8], "media_data": row[9],
     }
 
-_SEL = ("SELECT connection_id,chat_id,message_id,sender_name,text,date,media_type,file_id "
-        "FROM messages ")
+_SEL = (
+    "SELECT connection_id,chat_id,message_id,sender_id,sender_name,"
+    "text,date,media_type,file_id,media_data FROM messages "
+)
 
 
 async def get_message(connection_id: str, chat_id: int, message_id: int) -> Optional[Dict[str, Any]]:
@@ -89,7 +107,6 @@ async def get_message(connection_id: str, chat_id: int, message_id: int) -> Opti
 
 
 async def find_by_message_id(connection_id: str, message_id: int) -> List[Dict[str, Any]]:
-    """Fallback when chat_id unknown (deleted_business_messages might omit it)."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             _SEL + "WHERE connection_id=? AND message_id=?",
