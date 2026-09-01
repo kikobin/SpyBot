@@ -66,17 +66,23 @@ def _extract_file_id(msg: Message) -> tuple[Optional[str], Optional[str]]:
 
 
 async def _download_media(bot: Bot, file_id: str) -> Optional[bytes]:
-    """Download file by file_id, return raw bytes (or None if too large / error)."""
+    """Download file by file_id. Returns None if too large, once-view blocked, or any error."""
     try:
         tg_file = await bot.get_file(file_id)
         if tg_file.file_size and tg_file.file_size > MAX_MEDIA_BYTES:
-            logger.info("skip download: %s bytes > limit", tg_file.file_size)
+            logger.info("skip download: %s bytes > 20 MB limit", tg_file.file_size)
+            return None
+        if not tg_file.file_path:
+            # Telegram did not provide file_path — view-once or server restriction
+            logger.info("no file_path for file_id=%s (view-once?)", file_id[:20])
             return None
         buf = io.BytesIO()
         await bot.download_file(tg_file.file_path, destination=buf)
-        return buf.getvalue()
+        data = buf.getvalue()
+        logger.info("downloaded %d bytes for file_id=%s", len(data), file_id[:20])
+        return data
     except Exception as e:
-        logger.warning("download_media failed: %s", e)
+        logger.warning("download_media failed (%s): %s", type(e).__name__, e)
         return None
 
 
@@ -175,8 +181,11 @@ async def on_business_message(message: Message, bot: Bot):
 
     # Download media bytes immediately so we can resend even after deletion
     media_data: Optional[bytes] = None
+    download_failed = False
     if file_id:
         media_data = await _download_media(bot, file_id)
+        if media_data is None:
+            download_failed = True
 
     await save_message(
         connection_id=conn_id,
@@ -190,6 +199,22 @@ async def on_business_message(message: Message, bot: Bot):
         file_id=file_id,
         media_data=media_data,
     )
+
+    # Once-view media: Telegram Bot API blocks download of view-once files.
+    # Warn owner immediately — they need to open it NOW before it expires.
+    if download_failed and mtype and sender_id != 0:
+        conn = await get_connection(conn_id)
+        if conn and sender_id != conn["user_id"]:
+            sender_name = _sender_name(message)
+            label = {"photo": "фото", "video": "видео", "video_note": "кружок",
+                     "voice": "голосовое", "audio": "аудио"}.get(mtype, mtype)
+            await bot.send_message(
+                conn["user_chat_id"],
+                f"⚠️ <b>Одноразовый {label}</b> от {sender_name}\n\n"
+                f"Telegram не разрешает боту скачать это медиа.\n"
+                f"<b>Открой сейчас</b> — после просмотра оно исчезнет.",
+                parse_mode=ParseMode.HTML,
+            )
 
 
 @router.edited_business_message()
