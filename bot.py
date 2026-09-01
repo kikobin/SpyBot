@@ -259,17 +259,7 @@ async def on_business_message(message: Message, bot: Bot):
         media_data=media_data,
     )
 
-    # Once-view: download blocked by Telegram — tell owner to reply (don't open!)
-    if download_failed and mtype:
-        label = _MEDIA_LABELS.get(mtype, mtype)
-        sender_name = _sender_name(message)
-        await bot.send_message(
-            conn["user_chat_id"],
-            f"⏳ <b>Одноразовый {label}</b> от {sender_name}\n\n"
-            f"Ответь на него <b>любым сообщением</b> (не открывая!) "
-            f"— и я скачаю его для тебя.",
-            parse_mode=ParseMode.HTML,
-        )
+    # Once-view: download blocked by Telegram — silently wait for owner's reply
 
 
 @router.edited_business_message()
