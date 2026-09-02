@@ -3,17 +3,25 @@ import io
 import logging
 from typing import Optional
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import CommandStart
 from aiogram.types import (
     BusinessConnection,
     BusinessMessagesDeleted,
     Message,
+    Update,
 )
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
-from config import BOT_TOKEN
+from config import (
+    BOT_TOKEN,
+    WEBHOOK_URL,
+    WEBHOOK_PATH,
+    WEBHOOK_SECRET_TOKEN,
+    PORT,
+)
 from db import (
     MAX_MEDIA_BYTES,
     init_db,
@@ -357,6 +365,68 @@ async def on_deleted_business_messages(event: BusinessMessagesDeleted, bot: Bot)
         await delete_cached(conn_id, cached["chat_id"], msg_id)
 
 
+ALLOWED_UPDATES = [
+    "business_connection",
+    "business_message",
+    "edited_business_message",
+    "deleted_business_messages",
+    "message",
+]
+
+
+# ── Webhook / web server ─────────────────────────────────────────────────────
+
+async def on_webhook_startup(bot: Bot):
+    if not WEBHOOK_URL:
+        logger.warning(
+            "WEBHOOK_URL не задан — не могу зарегистрировать webhook в Telegram. "
+            "Установи RAILWAY_PUBLIC_DOMAIN или WEBHOOK_URL."
+        )
+        return
+    await bot.set_webhook(
+        url=WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET_TOKEN or None,
+        allowed_updates=ALLOWED_UPDATES,
+        drop_pending_updates=False,
+    )
+    logger.info("Webhook установлен: %s", WEBHOOK_URL)
+
+
+async def on_webhook_shutdown(bot: Bot):
+    await bot.delete_webhook()
+    logger.info("Webhook удалён")
+
+
+def _make_webhook_handler(bot: Bot, dp: Dispatcher):
+    async def handle_webhook(request: web.Request) -> web.Response:
+        # Verify the request actually came from Telegram, if a secret is set.
+        if WEBHOOK_SECRET_TOKEN:
+            token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+            if token != WEBHOOK_SECRET_TOKEN:
+                logger.warning("webhook: invalid secret token")
+                return web.Response(status=401)
+
+        try:
+            data = await request.json()
+        except Exception as e:
+            logger.warning("webhook: failed to parse JSON body: %s", e)
+            return web.Response(status=400)
+
+        update = Update.model_validate(data, context={"bot": bot})
+
+        # Acknowledge Telegram immediately; process update in the background
+        # so slow handlers don't cause Telegram to retry delivery.
+        asyncio.create_task(dp.feed_update(bot, update))
+
+        return web.Response(status=200)
+
+    return handle_webhook
+
+
+async def health_check(request: web.Request) -> web.Response:
+    return web.Response(status=200, text="ok")
+
+
 # ── Start ─────────────────────────────────────────────────────────────────────
 
 async def main():
@@ -372,13 +442,25 @@ async def main():
     me = await bot.get_me()
     logger.info("Запущен: @%s", me.username)
 
-    await dp.start_polling(bot, allowed_updates=[
-        "business_connection",
-        "business_message",
-        "edited_business_message",
-        "deleted_business_messages",
-        "message",
-    ])
+    await on_webhook_startup(bot)
+
+    app = web.Application()
+    app.router.add_post(WEBHOOK_PATH, _make_webhook_handler(bot, dp))
+    app.router.add_get("/", health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+    logger.info("Webhook сервер запущен на порту %d, путь %s", PORT, WEBHOOK_PATH)
+
+    try:
+        # Keep the process alive; updates are delivered via the webhook route.
+        await asyncio.Event().wait()
+    finally:
+        await on_webhook_shutdown(bot)
+        await runner.cleanup()
+        await bot.session.close()
 
 
 if __name__ == "__main__":
