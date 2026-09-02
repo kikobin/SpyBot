@@ -30,14 +30,23 @@ python bot.py
 |---|---|
 | `BOT_TOKEN` | Токен от @BotFather (обязательно) |
 | `DB_PATH` | Путь к SQLite базе (по умолчанию `messages.db`) |
+| `WEBHOOK_URL` | Полный URL вебхука (по умолчанию собирается из `RAILWAY_PUBLIC_DOMAIN` + `/webhook`) |
+| `WEBHOOK_PATH` | Путь вебхука (по умолчанию `/webhook`) |
+| `WEBHOOK_SECRET_TOKEN` | Секретный токен для проверки запросов от Telegram (рекомендуется) |
+| `PORT` | Порт HTTP-сервера (по умолчанию `8080`, Railway задаёт автоматически) |
+
+Бот работает через **webhook**, а не polling — это надёжнее на Railway, так как
+не зависит от постоянного соединения, которое может рваться при редеплоях.
 
 ## Деплой на Railway
 
 1. Форкни репо или пуш свой
 2. [railway.app](https://railway.app) → New Project → Deploy from GitHub
 3. Добавь переменную `BOT_TOKEN` в Variables
-4. Добавь **Volume** (Storage) с mount path `/data` и установи `DB_PATH=/data/messages.db` — иначе база сбросится при редеплое
-5. Railway автоматически запустит `python bot.py`
+4. Включи **публичный домен** для сервиса (Settings → Networking → Generate Domain) — Railway автоматически задаст `RAILWAY_PUBLIC_DOMAIN`, из которого строится `WEBHOOK_URL`
+5. (Рекомендуется) Добавь `WEBHOOK_SECRET_TOKEN` со случайным значением
+6. Добавь **Volume** (Storage) с mount path `/data` и установи `DB_PATH=/data/messages.db` — иначе база сбросится при редеплое
+7. Railway автоматически запустит `python bot.py`, при старте бот сам зарегистрирует webhook в Telegram
 
 ## Подключение бота
 
