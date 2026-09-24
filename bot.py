@@ -7,6 +7,7 @@ from typing import Optional
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import CommandStart
 from aiogram.types import (
+    BufferedInputFile,
     BusinessConnection,
     BusinessMessagesDeleted,
     Message,
@@ -99,17 +100,17 @@ async def _send_cached_media(bot: Bot, chat_id: int, cached: dict):
     async def send_buf(data: bytes):
         ext = {"video": "mp4", "voice": "ogg", "audio": "mp3",
                "video_note": "mp4", "document": "bin"}.get(mtype, "jpg")
-        buf = io.BytesIO(data)
-        buf.name = f"media.{ext}"
+        # aiogram 3.x requires an InputFile, not a raw BytesIO — wrap the bytes.
+        file = BufferedInputFile(data, filename=f"media.{ext}")
         cap = f"🗑 Удалённый {mtype}"
         try:
             match mtype:
-                case "photo":      await bot.send_photo(chat_id, buf, caption=cap)
-                case "video":      await bot.send_video(chat_id, buf, caption=cap)
-                case "voice":      await bot.send_voice(chat_id, buf)
-                case "video_note": await bot.send_video_note(chat_id, buf)
-                case "audio":      await bot.send_audio(chat_id, buf, caption=cap)
-                case _:            await bot.send_document(chat_id, buf, caption=cap)
+                case "photo":      await bot.send_photo(chat_id, file, caption=cap)
+                case "video":      await bot.send_video(chat_id, file, caption=cap)
+                case "voice":      await bot.send_voice(chat_id, file)
+                case "video_note": await bot.send_video_note(chat_id, file)
+                case "audio":      await bot.send_audio(chat_id, file, caption=cap)
+                case _:            await bot.send_document(chat_id, file, caption=cap)
         except Exception as e:
             logger.warning("send_buf(%s) failed: %s", mtype, e)
 
