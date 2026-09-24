@@ -382,6 +382,17 @@ async def main():
     me = await bot.get_me()
     logger.info("Запущен: @%s", me.username)
 
+    # Remove any leftover webhook so long polling can work. If a webhook is set
+    # (e.g. from a previous webhook-based deploy), Telegram refuses getUpdates
+    # with "Conflict: can't use getUpdates method while webhook is active" and
+    # the bot receives nothing while still appearing to run. Keep pending
+    # updates (drop_pending_updates=False) so nothing queued is lost.
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url:
+        logger.info("Обнаружен активный webhook (%s), удаляю для polling...", webhook_info.url)
+        await bot.delete_webhook(drop_pending_updates=False)
+        logger.info("Webhook удалён")
+
     stop_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
