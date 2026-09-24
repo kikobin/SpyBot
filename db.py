@@ -10,6 +10,11 @@ MAX_MEDIA_BYTES = 20 * 1024 * 1024
 
 
 async def init_db():
+    # Ensure the parent directory exists (e.g. /data from a Railway Volume).
+    # Without it SQLite fails with "unable to open database file".
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript("""
             CREATE TABLE IF NOT EXISTS connections (
