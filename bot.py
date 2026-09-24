@@ -155,6 +155,10 @@ async def on_start(message: Message):
 
 @router.business_connection()
 async def on_business_connection(bc: BusinessConnection, bot: Bot):
+    logger.info(
+        "business_connection: id=%s user_id=%s user_chat_id=%s enabled=%s",
+        bc.id, bc.user.id, bc.user_chat_id, bc.is_enabled,
+    )
     await save_connection(bc.id, bc.user_chat_id, bc.user.id, bc.is_enabled)
     if bc.is_enabled:
         await bot.send_message(
@@ -183,10 +187,15 @@ async def on_business_message(message: Message, bot: Bot):
 
     conn = await get_connection(conn_id)
     if not conn:
+        logger.warning("business_message: no saved connection for conn_id=%s — reconnect the bot", conn_id)
         return
 
     sender_id = message.from_user.id if message.from_user else 0
     is_outgoing = sender_id == conn["user_id"]
+    logger.info(
+        "business_message: conn_id=%s msg_id=%s chat_id=%s sender_id=%s outgoing=%s",
+        conn_id, message.message_id, message.chat.id, sender_id, is_outgoing,
+    )
 
     # ── Owner replied to a message → try to download the replied-to media ──────
     if is_outgoing and message.reply_to_message:
@@ -318,11 +327,16 @@ async def on_deleted_business_messages(event: BusinessMessagesDeleted, bot: Bot)
     conn_id = event.business_connection_id
     conn = await get_connection(conn_id)
     if not conn:
+        logger.warning("deleted_business_messages: no saved connection for conn_id=%s — reconnect the bot", conn_id)
         return
 
     user_chat_id = conn["user_chat_id"]
     owner_id = conn["user_id"]
     chat_id = event.chat.id if event.chat else None
+    logger.info(
+        "deleted_business_messages: conn_id=%s chat_id=%s message_ids=%s",
+        conn_id, chat_id, list(event.message_ids),
+    )
 
     for msg_id in event.message_ids:
         if chat_id:
@@ -334,12 +348,14 @@ async def on_deleted_business_messages(event: BusinessMessagesDeleted, bot: Bot)
                 chat_id = cached["chat_id"]
 
         if not cached:
+            logger.info("deleted_business_messages: msg_id=%s NOT in cache — nothing to send", msg_id)
             continue
 
         # Don't notify when owner deletes their own messages.
         # sender_id == 0 means cached before fix (unknown sender) — skip to be safe.
         s_id = cached.get("sender_id") or 0
         if s_id == owner_id or s_id == 0:
+            logger.info("deleted_business_messages: msg_id=%s skipped (own/unknown sender_id=%s)", msg_id, s_id)
             await delete_cached(conn_id, cached["chat_id"], msg_id)
             continue
 
